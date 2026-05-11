@@ -7,6 +7,7 @@ def _d(b):
     try: return b.decode()
     except: return b.decode('gbk', 'replace')
 def _run(*a, **k):
+    if os.name == 'nt': k['creationflags'] = (k.get('creationflags') or 0) | 0x08000000
     t = k.pop('text', 0) | k.pop('universal_newlines', 0)
     enc = k.pop('encoding', None)
     k.pop('errors', None)
