@@ -1,30 +1,71 @@
 import os, json, re, time, requests, sys, threading, urllib3, base64, importlib, uuid
 from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-_RESP_CACHE_KEY = str(uuid.uuid4())
+_RESYNC_LOCK = threading.RLock()   # ← 新增：防止并发重载
 
 def _load_mykeys():
+    """Load mykey.py by directly exec()-ing it. No import/reload, zero concurrency issues."""
     global _mykey_path
+    mykey_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mykey.py')
+    
+    if not os.path.exists(mykey_path):
+        _mykey_path = p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mykey.json')
+        if not os.path.exists(p):
+            raise Exception('[ERROR] mykey.py or mykey.json not found.')
+        with open(p, encoding='utf-8') as f:
+            return json.load(f)
+    
+    _mykey_path = mykey_path
+    
+    # Read and compile-first for clear error messages
+    with open(mykey_path, 'r', encoding='utf-8') as f:
+        mykey_code = f.read()
+    
     try:
-        import mykey; importlib.reload(mykey); _mykey_path = mykey.__file__
-        return {k: v for k, v in vars(mykey).items() if not k.startswith('_')}
-    except ImportError: pass
-    _mykey_path = p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mykey.json')
-    if not os.path.exists(p): raise Exception('[ERROR] mykey.py or mykey.json not found, please create one from mykey_template.')
-    with open(p, encoding='utf-8') as f: return json.load(f)
+        code = compile(mykey_code, mykey_path, 'exec')
+    except SyntaxError as e:
+        with open(mykey_path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        err_line = e.lineno or 1
+        bad_line = lines[err_line - 1].rstrip() if 0 < err_line <= len(lines) else '(N/A)'
+        start = max(0, err_line - 3)
+        end = min(len(lines), err_line + 2)
+        ctx = ''.join(f"  {i+1:4d}: {lines[i].rstrip()}\n" for i in range(start, end))
+        if 0 < err_line <= len(lines):
+            leading = lines[err_line - 1][:len(lines[err_line - 1]) - len(lines[err_line - 1].lstrip())]
+            lead = f"Leading: {leading!r} (spaces={leading.count(' ')}, tabs={leading.count(chr(9))})"
+        else:
+            lead = ""
+        raise Exception(
+            f'[ERROR] mykey.py syntax error at line {err_line}: {e.msg}\n'
+            f'  {lead}\n'
+            f'  Problematic line: {bad_line!r}\n'
+            f'  Context:\n{ctx}'
+        )
+    
+    # Execute in isolated namespace
+    mykey_ns = {}
+    try:
+        exec(code, mykey_ns)
+    except Exception as e:
+        raise Exception(f'[ERROR] mykey.py execution error at line {e.__traceback__.tb_lineno}: {type(e).__name__}: {e}')
+    
+    return {k: v for k, v in mykey_ns.items() if not k.startswith('_')}
 
 _mykey_path = _mykey_mtime = None
+
 def reload_mykeys():
     global _mykey_mtime
-    mt = os.stat(_mykey_path).st_mtime_ns if _mykey_path else -1
-    if mt == _mykey_mtime: return globals().get('mykeys', {}), False
-    mk = _load_mykeys(); _mykey_mtime = os.stat(_mykey_path).st_mtime_ns
-    print(f'[Info] Load mykeys from {_mykey_path}')
-    globals().update(mykeys=mk)
-    if mk.get('langfuse_config'):
-        try: from plugins import langfuse_tracing
-        except Exception: pass
-    return mk, True
+    with _RESYNC_LOCK:   # ← 线程安全保护
+        mt = os.stat(_mykey_path).st_mtime_ns if _mykey_path else -1
+        if mt == _mykey_mtime: return globals().get('mykeys', {}), False
+        mk = _load_mykeys(); _mykey_mtime = os.stat(_mykey_path).st_mtime_ns
+        print(f'[Info] Load mykeys from {_mykey_path}')
+        globals().update(mykeys=mk)
+        if mk.get('langfuse_config'):
+            try: from plugins import langfuse_tracing
+            except Exception: pass
+        return mk, True
 
 def __getattr__(name):  # once guard in PEP 562
     if name == 'mykeys': return reload_mykeys()[0]
