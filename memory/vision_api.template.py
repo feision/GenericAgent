@@ -72,8 +72,14 @@ def _prepare_image(image_input, max_pixels=1440000):
     return b64
 
 def _load_config():
-    import mykey
-    return mykey
+    # Use llmcore's thread-safe loader instead of direct import
+    from llmcore import reload_mykeys
+    mykeys, _ = reload_mykeys()
+    # Return as a simple namespace-like object for compatibility
+    class ConfigNamespace:
+        def __init__(self, d):
+            self.__dict__.update(d)
+    return ConfigNamespace(mykeys)
 
 def _call_claude(b64, prompt, timeout, max_tokens=1024):
     mk = _load_config()
