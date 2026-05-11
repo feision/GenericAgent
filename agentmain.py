@@ -53,27 +53,33 @@ class GenericAgent:
         self.load_llm_sessions()
 
     def load_llm_sessions(self):
-        mykeys, changed = reload_mykeys()
-        if not changed and hasattr(self, 'llmclients'): return
-        try: oldhistory = self.llmclient.backend.history
-        except: oldhistory = None
-        llm_sessions = []
-        for k, cfg in mykeys.items():
-            if not any(x in k for x in ['api', 'config', 'cookie']): continue
-            try:
-                if 'mixin' in k: llm_sessions += [{'mixin_cfg': cfg}]
-                elif c := resolve_client(k): llm_sessions += [c]
-            except: pass
-        for i, s in enumerate(llm_sessions):
-            if isinstance(s, dict) and 'mixin_cfg' in s:
+        from llmcore import _RESYNC_LOCK   # 导入全局锁
+        with _RESYNC_LOCK:  # 线程安全：防止并发重载配置
+            mykeys, changed = reload_mykeys()
+            if not changed and hasattr(self, 'llmclients'): return
+            try: oldhistory = self.llmclient.backend.history
+            except: oldhistory = None
+            llm_sessions = []
+            for k, cfg in mykeys.items():
+                if not any(x in k for x in ['api', 'config', 'cookie']): continue
                 try:
-                    mixin = MixinSession(llm_sessions, s['mixin_cfg'])
-                    if isinstance(mixin._sessions[0], (NativeClaudeSession, NativeOAISession)): llm_sessions[i] = NativeToolClient(mixin)
-                    else: llm_sessions[i] = ToolClient(mixin)
-                except Exception as e: print(f'\n\n\n[ERROR] Failed to init MixinSession with cfg {s["mixin_cfg"]}: {e}!!!\n\n')
-        self.llmclients = llm_sessions
-        self.llmclient = self.llmclients[self.llm_no%len(self.llmclients)]
-        if oldhistory: self.llmclient.backend.history = oldhistory
+                    if 'mixin' in k: llm_sessions += [{'mixin_cfg': cfg}]
+                    elif c := resolve_client(k): llm_sessions += [c]
+                except: pass
+            for i, s in enumerate(llm_sessions):
+                if isinstance(s, dict) and 'mixin_cfg' in s:
+                    try:
+                        mixin = MixinSession(llm_sessions, s['mixin_cfg'])
+                        if isinstance(mixin._sessions[0], (NativeClaudeSession, NativeOAISession)):
+                            llm_sessions[i] = NativeToolClient(mixin)
+                        else:
+                            llm_sessions[i] = ToolClient(mixin)
+                    except Exception as e:
+                        print(f'\n\n\n[ERROR] Failed to init MixinSession with cfg {s["mixin_cfg"]}: {e}!!!\n\n')
+            self.llmclients = llm_sessions
+            self.llmclient = self.llmclients[self.llm_no % len(self.llmclients)]
+            if oldhistory:
+                self.llmclient.backend.history = oldhistory
     
     def next_llm(self, n=-1):
         self.load_llm_sessions()
